@@ -1,0 +1,91 @@
+name: Build Vajra Kernel (redwood)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential curl flex \
+            libelf-dev libssl-dev libncurses-dev \
+            python3 python3-pip rsync unzip zip git
+
+      - name: Sanity check — required defconfig fragments exist
+        run: |
+          test -f arch/arm64/configs/vendor/xiaomi-qgki_defconfig || \
+            { echo "::error::vendor/xiaomi-qgki_defconfig not found — check repo layout"; exit 1; }
+          test -f arch/arm64/configs/vendor/redwood.config || \
+            { echo "::error::arch/arm64/configs/vendor/redwood.config missing"; exit 1; }
+          test -f arch/arm64/configs/vendor/vajra.config || \
+            { echo "::error::arch/arm64/configs/vendor/vajra.config missing"; exit 1; }
+          test -f scripts/config || \
+            { echo "::error::scripts/config not found — cannot disable MODULE_SIG"; exit 1; }
+
+      - name: Cache Neutron Clang toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchains/neutron-clang
+          key: neutron-clang-24-${{ runner.os }}
+
+      - name: Download Neutron Clang 24
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ github.workspace }}/toolchains/neutron-clang"
+          cd "${{ github.workspace }}/toolchains/neutron-clang"
+          curl -LO --retry 3 "https://raw.githubusercontent.com/Dakkshesh07/Neutron-Clang/master/antman"
+          chmod +x antman
+          ./antman -S
+          # If the repo pins an exact Clang 24 tag from the Neutron-Clang Releases
+          # page, replace "-S" with "-S=<tag>" so the cached version always matches.
+
+      - name: Build kernel
+        run: |
+          export PATH="${{ github.workspace }}/toolchains/neutron-clang/bin:$PATH"
+          export KBUILD_BUILD_USER=genie
+          export KBUILD_BUILD_HOST=vajra
+
+          ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-"
+
+          make -j$(nproc) O=out $ARGS vendor/xiaomi-qgki_defconfig
+
+          scripts/kconfig/merge_config.sh -O out -m out/.config \
+            arch/arm64/configs/vendor/redwood.config \
+            arch/arm64/configs/vendor/vajra.config
+
+          # --- Disable module signature verification before the final build ---
+          ./scripts/config --file out/.config \
+            -d MODULE_SIG \
+            -d MODULE_SIG_FORCE \
+            -d MODULE_SIG_ALL \
+            -d MODULE_SIG_PROTECT
+
+          make -j$(nproc) O=out $ARGS olddefconfig
+          make -j$(nproc) O=out $ARGS Image
+
+      - name: Confirm module signing is off
+        run: |
+          if grep -qE "^CONFIG_MODULE_SIG(_FORCE|_ALL)?=y" out/.config; then
+            echo "::error::MODULE_SIG is still enabled in out/.config"; exit 1
+          fi
+          echo "Module signature verification is disabled."
+
+      - name: Upload kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: redwood-hackX-Image
+          path: out/arch/arm64/boot/Image
+          if-no-files-found: error
