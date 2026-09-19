@@ -46,11 +46,12 @@ jobs:
         run: |
           mkdir -p "${{ github.workspace }}/toolchains/neutron-clang"
           cd "${{ github.workspace }}/toolchains/neutron-clang"
-          curl -LO --retry 3 "https://raw.githubusercontent.com/Dakkshesh07/Neutron-Clang/master/antman"
+          curl -LO --retry 3 "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
           chmod +x antman
           ./antman -S
-          # If the repo pins an exact Clang 24 tag from the Neutron-Clang Releases
-          # page, replace "-S" with "-S=<tag>" so the cached version always matches.
+          # If you need to pin an exact Clang 24 build instead of whatever is
+          # latest, find its tag under Neutron-Toolchains/clang-build-catalogue
+          # Releases and replace "-S" with "-S=<tag>" so it's reproducible.
 
       - name: Build kernel
         run: |
