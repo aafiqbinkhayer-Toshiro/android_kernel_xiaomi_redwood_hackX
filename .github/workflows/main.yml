@@ -5,6 +5,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -90,3 +93,49 @@ jobs:
           name: redwood-hackX-Image
           path: out/arch/arm64/boot/Image
           if-no-files-found: error
+
+      - name: Build metadata
+        id: meta
+        run: |
+          echo "date=$(date +%Y%m%d-%H%M)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # --- GENERIC AnyKernel3 (osm0sis/AnyKernel3), configured for redwood. ---
+      # Replace this with your own device-specific AnyKernel3 fork/anykernel.sh
+      # whenever you have one — just swap the git clone URL below.
+      - name: Clone AnyKernel3 template
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3
+          rm -rf anykernel3/.git
+
+      - name: Configure anykernel.sh for redwood
+        run: |
+          cd anykernel3
+          sed -i "s/^kernel\.string=.*/kernel.string=Vajra Kernel by aafiqbinkhayer-Toshiro @ redwood_hackX/" anykernel.sh
+          sed -i "s/^do\.devicecheck=.*/do.devicecheck=1/" anykernel.sh
+          sed -i "s/^do\.modules=.*/do.modules=1/" anykernel.sh
+          sed -i "s/^device\.name1=.*/device.name1=redwood/" anykernel.sh
+          sed -i "/^device\.name[2-5]=/d" anykernel.sh
+          sed -i "s#^block=.*#block=/dev/block/bootdevice/by-name/boot;#" anykernel.sh
+          sed -i "s/^is_slot_device=.*/is_slot_device=auto;/" anykernel.sh
+          sed -i "s/^ramdisk_compression=.*/ramdisk_compression=auto;/" anykernel.sh
+          # NOTE: is_slot_device is left as "auto" (detects A-only vs A/B at
+          # flash time) since redwood's exact partition layout isn't confirmed
+          # here. Verify block= and is_slot_device against a real device/ROM
+          # once you swap in a device-specific AnyKernel3.
+
+      - name: Package flashable zip
+        id: package
+        run: |
+          cp out/arch/arm64/boot/Image anykernel3/Image
+          cd anykernel3
+          ZIP_NAME="Vajra-redwood-hackX-${{ steps.meta.outputs.date }}-${{ steps.meta.outputs.short_sha }}.zip"
+          zip -r9 "../$ZIP_NAME" . -x ".git*"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: redwood-hackX-${{ steps.meta.outputs.date }}-${{ steps.meta.outputs.short_sha }}
+          name: Vajra redwood_hackX build ${{ steps.meta.outputs.date }}
+          files: ${{ steps.package.outputs.zip_name }}
