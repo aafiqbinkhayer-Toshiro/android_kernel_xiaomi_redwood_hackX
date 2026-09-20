@@ -70,22 +70,48 @@ jobs:
             arch/arm64/configs/vendor/redwood.config \
             arch/arm64/configs/vendor/vajra.config
 
-          # --- Disable module signature verification before the final build ---
+          # --- Make sure module loading is even possible, then strip anything that'd block it ---
           ./scripts/config --file out/.config \
+            -e MODULES \
             -d MODULE_SIG \
             -d MODULE_SIG_FORCE \
             -d MODULE_SIG_ALL \
-            -d MODULE_SIG_PROTECT
+            -d MODULE_SIG_PROTECT \
+            -d MODULE_SIG_UEFI \
+            -d SECURITY_LOCKDOWN_LSM \
+            -d SECURITY_LOCKDOWN_LSM_EARLY \
+            -d LOCK_DOWN_KERNEL_FORCE_INTEGRITY \
+            -d LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY
 
           make -j$(nproc) O=out $ARGS olddefconfig
           make -j$(nproc) O=out $ARGS Image
 
-      - name: Confirm module signing is off
+      - name: Full module-loading checkup
         run: |
-          if grep -qE "^CONFIG_MODULE_SIG(_FORCE|_ALL)?=y" out/.config; then
-            echo "::error::MODULE_SIG is still enabled in out/.config"; exit 1
+          CFG="out/.config"
+          echo "== Module loading support (master switch) =="
+          if grep -qE "^CONFIG_MODULES=y" "$CFG"; then
+            echo "CONFIG_MODULES is ON — module loading is supported."
+          else
+            echo "::error::CONFIG_MODULES is NOT enabled in out/.config, so no .ko can ever load regardless of signing. Auto-enable via scripts/config failed — a defconfig fragment (redwood.config/vajra.config/xiaomi-qgki_defconfig) is likely forcing it off, or this arch/target doesn't build with module support. Check for a stray 'CONFIG_MODULES=n' or '# CONFIG_MODULES is not set' line in those fragments."
+            exit 1
           fi
-          echo "Module signature verification is disabled."
+
+          echo "== Signature / lockdown options in final .config =="
+          grep -E "^CONFIG_(MODULE_SIG|SECURITY_LOCKDOWN|LOCK_DOWN)" "$CFG" || echo "(none set — fully absent)"
+
+          # Hard-fail only on options that actively enforce/reject unsigned modules
+          if grep -qE "^CONFIG_(MODULE_SIG_FORCE|SECURITY_LOCKDOWN_LSM|LOCK_DOWN_KERNEL_FORCE_(INTEGRITY|CONFIDENTIALITY))=y" "$CFG"; then
+            echo "::error::Signature/lockdown enforcement is still ON after auto-disable — a defconfig fragment is re-selecting it via Kconfig 'select'. Check redwood.config / vajra.config."
+            exit 1
+          fi
+          echo "Signature/lockdown enforcement confirmed OFF."
+
+          echo "== Informational: CFI / module ABI hardening =="
+          grep -E "^CONFIG_(CFI_CLANG|CFI_PERMISSIVE|MODVERSIONS|SHADOW_CALL_STACK)" "$CFG" || echo "(none of these set)"
+          if grep -qE "^CONFIG_CFI_CLANG=y" "$CFG" && ! grep -qE "^CONFIG_CFI_PERMISSIVE=y" "$CFG"; then
+            echo "::warning::CFI_CLANG is ON without CFI_PERMISSIVE. This is a very common cause of an instant reboot on insmod — not module signing. Any .ko not built against this exact kernel tree/commit (matching vermagic + CFI tags) will panic the moment it's loaded, signed or not."
+          fi
 
       - name: Upload kernel Image
         uses: actions/upload-artifact@v4
